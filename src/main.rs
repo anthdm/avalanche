@@ -8,7 +8,6 @@ use rand::{sample, thread_rng, Rng};
 use ring::digest;
 
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::{mpsc::{channel, Receiver, Sender},
                 Arc,
                 Mutex};
@@ -18,7 +17,7 @@ fn main() {
     let mut net = Network::new(10);
     net.run();
 
-    let mut node = net.nodes.get_mut(&1).unwrap();
+    let node = net.nodes.get_mut(&1).unwrap();
     let msg = Message::Transaction(Transaction::random());
     node.lock().unwrap().handle_message(0, &msg);
 
@@ -36,7 +35,7 @@ impl Hash {
 
 impl ::std::fmt::Display for Hash {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "{}", hex::encode(&self.0))
+        write!(f, "{:?}", self.to_string())
     }
 }
 
@@ -199,7 +198,7 @@ impl Node {
         match msg {
             Message::Query(ref msg) => self.handle_query(origin, msg),
             Message::QueryResponse((_to, ref msg)) => {
-                if let Some((hash, status)) = self.handle_query_response(msg) {
+                if let Some((_hash, _status)) = self.handle_query_response(msg) {
                     panic!("got decision");
                 };
             }
@@ -233,7 +232,7 @@ impl Node {
     /// round of query, for a total of m rounds. Finally, the node decides the
     /// color it ended up with at time m.
     ///
-    /// TODO: timeout!
+    /// TODO: timeout + error handling!
     fn handle_query_response(&mut self, msg: &QueryResponse) -> Option<(Hash, Status)> {
         let state = self.mempool.get_mut(&msg.hash).unwrap();
         state.responses.push(msg.status.clone());
