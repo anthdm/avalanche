@@ -24,7 +24,7 @@ fn main() {
     loop {}
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Hash)]
+#[derive(Eq, PartialEq, Clone, Hash)]
 struct Hash(Vec<u8>);
 
 impl Hash {
@@ -34,6 +34,12 @@ impl Hash {
 }
 
 impl ::std::fmt::Display for Hash {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "{:?}", self.to_string())
+    }
+}
+
+impl ::std::fmt::Debug for Hash {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "{:?}", self.to_string())
     }
@@ -122,7 +128,7 @@ impl Network {
             let (origin, msg) = receiver.lock().unwrap().recv().unwrap();
             match msg {
                 Message::Query(ref _msg) => {
-                    let mut sampled = sample_nodes(&nodes, SAMPLES);
+                    let mut sampled = sample_nodes(&nodes, SAMPLES, origin);
                     sampled
                         .iter()
                         .map(|id| {
@@ -145,10 +151,11 @@ impl Network {
     }
 }
 
-fn sample_nodes(nodes: &HashMap<u64, Arc<Mutex<Node>>>, n: usize) -> Vec<u64> {
+fn sample_nodes(nodes: &HashMap<u64, Arc<Mutex<Node>>>, n: usize, excl: u64) -> Vec<u64> {
     let ids: Vec<u64> = nodes
         .iter()
-        .map(|(_, node)| node.lock().unwrap().id)
+        .filter(|(&id, _)| id != excl)
+        .map(|(id, _)| *id)
         .collect();
     sample(&mut thread_rng(), ids, n)
 }
@@ -194,7 +201,8 @@ impl Node {
     }
 
     fn handle_message(&mut self, origin: u64, msg: &Message) {
-        println!("node {} recv {:?}", self.id, msg);
+        println!("node {} recv from {} => {:?}", self.id, origin, msg);
+
         match msg {
             Message::Query(ref msg) => self.handle_query(origin, msg),
             Message::QueryResponse((_to, ref msg)) => {
@@ -248,6 +256,7 @@ impl Node {
             status: state.status.clone(),
         });
         self.sender.send((self.id, msg));
+
         None
     }
 
