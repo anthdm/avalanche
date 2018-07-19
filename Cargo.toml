@@ -1,0 +1,10 @@
+[package]
+name = "avalanche"
+version = "0.1.0"
+authors = ["Anthony De Meulemeester <anthony@academiclabs.co>"]
+
+[dependencies]
+rand = "0.5.4"
+byteorder = "1.2.3"
+ring = "0.13.2"
+hex = "0.3.2"
