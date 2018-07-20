@@ -7,6 +7,7 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use rand::{sample, thread_rng, Rng};
 use ring::digest;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{mpsc::{channel, Receiver, Sender},
                 Arc,
@@ -52,7 +53,7 @@ enum Message {
     Transaction(Transaction),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum Status {
     Valid,
     Invalid,
@@ -182,11 +183,18 @@ impl TxState {
         self.epoch += 1;
         self.responses.clear();
     }
+
+    fn flip(&mut self) {
+        match self.status {
+            Status::Valid => self.status = Status::Invalid,
+            Status::Invalid => self.status = Status::Valid,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct Node {
-    mempool: HashMap<Hash, TxState>,
+    mempool: HashMap<Hash, RefCell<TxState>>,
     id: u64,
     sender: Sender<(u64, Message)>,
 }
@@ -221,42 +229,57 @@ impl Node {
         // TODO: This can be so much cleaner, just fighting to much with compiler!!
         let state = if !self.mempool.contains_key(&msg.tx.hash()) {
             let state = TxState::new(msg.tx.clone(), msg.status.clone());
-            self.mempool.insert(msg.tx.hash(), state.clone());
+            self.mempool
+                .insert(msg.tx.hash(), RefCell::new(state.clone()));
             self.send_query(msg.tx.clone(), msg.status.clone());
             state
         } else {
-            self.mempool.get(&msg.tx.hash()).unwrap().clone()
+            let state = self.mempool.get(&msg.tx.hash()).unwrap();
+            state.clone().into_inner()
         };
         self.send_response(origin, state.tx.hash(), state.status.clone());
     }
 
     /// If k responses are not received within a time bound, the node picks an
     /// additional sample from the remaining nodes uniformly at random and queries
-    /// them until it collects all responses. Once the querying node collects k
-    /// responses, it checks if a fraction ≥ αk are for the same color,
-    /// where α > 0.5 is a protocol parameter. If the αk threshold is met and
-    /// the sampled color differs from the node’s own color, the node flips to
-    /// that color. It then goes back to the query step, and initiates a subsequent
-    /// round of query, for a total of m rounds. Finally, the node decides the
-    /// color it ended up with at time m.
-    ///
+    /// them until it collects all responses.     
     /// TODO: timeout + error handling!
     fn handle_query_response(&mut self, msg: &QueryResponse) -> Option<(Hash, Status)> {
-        let state = self.mempool.get_mut(&msg.hash).unwrap();
+        let mut state = self.mempool.get(&msg.hash).unwrap().borrow_mut();
         state.responses.push(msg.status.clone());
+
+        match self.check_responses(&mut state) {
+            Some(result) => Some(result),
+            None => {
+                self.send_query(state.tx.clone(), state.status.clone());
+                None
+            }
+        }
+    }
+
+    /// Once the querying node collects k responses, it checks if a
+    /// fraction ≥ αk are for the same color, where α > 0.5 is a protocol parameter.
+    /// If the αk threshold is met and the sampled color differs from the node’s
+    /// own color, the node flips to that color. It then goes back to the query step,
+    /// and initiates a subsequent round of query, for a total of m rounds.
+    /// Finally, the node decides the color it ended up with at time m.
+    fn check_responses(&self, state: &mut TxState) -> Option<(Hash, Status)> {
         if state.responses.len() == SAMPLES {
+            let n = state
+                .responses
+                .iter()
+                .filter(|&status| *status == state.status)
+                .count();
+
+            if n < (TRESHOLD * SAMPLES as f32) as usize {
+                state.flip();
+            }
+
             state.advance();
             if state.epoch == MAX_EPOCHS {
                 return Some((state.tx.hash(), state.status.clone()));
             }
         }
-
-        let msg = Message::Query(QueryMessage {
-            tx: state.tx.clone(),
-            status: state.status.clone(),
-        });
-        self.sender.send((self.id, msg));
-
         None
     }
 
@@ -265,12 +288,14 @@ impl Node {
         let status = self.verify_transaction(tx);
 
         // Add the tx to our mempool.
-        self.mempool
-            .insert(tx.hash(), TxState::new(tx.clone(), status.clone()));
+        self.mempool.insert(
+            tx.hash(),
+            RefCell::new(TxState::new(tx.clone(), status.clone())),
+        );
         self.send_query(tx.clone(), status.clone());
     }
 
-    fn send_query(&mut self, tx: Transaction, status: Status) {
+    fn send_query(&self, tx: Transaction, status: Status) {
         let msg = Message::Query(QueryMessage {
             tx: tx.clone(),
             status: status.clone(),
