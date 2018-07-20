@@ -30,7 +30,7 @@ fn main() {
             .unwrap()
             .handle_message(0, &Message::Transaction(tx));
 
-        thread::sleep_ms(500): // cpu ded 
+        thread::sleep_ms(500); // cpu ded
     }
 }
 
@@ -110,7 +110,8 @@ impl Transaction {
 
 pub const SAMPLES: usize = 4;
 pub const MAX_EPOCHS: u32 = 4;
-pub const TRESHOLD: f32 = 0.5;
+pub const TRESHOLD: f32 = 0.75;
+pub const CONVICTION_TRESHOLD: f32 = 0.75;
 
 #[derive(Debug)]
 struct Network {
@@ -177,6 +178,12 @@ struct TxState {
     status: Status,
     responses: Vec<Status>,
     is_final: bool,
+
+    /// 1. Each node maintains a counter cnt
+    /// 2. Upon every color change, the node resets cnt to 0
+    /// 3. Upon every successful query that yields ≥ αk responses for the same
+    /// color as the node, the node increments cnt.
+    cnt: u64,
 }
 
 impl TxState {
@@ -185,6 +192,7 @@ impl TxState {
             responses: Vec::new(),
             is_final: false,
             epoch: 0,
+            cnt: 0,
             tx,
             status,
         }
@@ -200,6 +208,8 @@ impl TxState {
             Status::Valid => self.status = Status::Invalid,
             Status::Invalid => self.status = Status::Valid,
         }
+        // Upon every color change we need to reset the counter.
+        self.cnt = 0;
     }
 }
 
@@ -257,18 +267,39 @@ impl Node {
     /// TODO: timeout + error handling!
     fn handle_query_response(&mut self, msg: &QueryResponse) -> Option<(Hash, Status)> {
         let mut state = self.mempool.get(&msg.hash).unwrap().borrow_mut();
+        // If the state is considered final we dont handle this response anymore.
         if state.is_final {
             return None;
         }
         state.responses.push(msg.status.clone());
 
-        match self.check_responses(&mut state) {
-            Some(result) => Some(result),
-            None => {
-                self.send_query(state.tx.clone(), state.status.clone());
-                None
+        let n = state
+            .responses
+            .iter()
+            .filter(|&status| status == &msg.status)
+            .count();
+
+        if n >= (TRESHOLD * SAMPLES as f32) as usize {
+            // If the treshold is met and the sampled status differs from the
+            // node, we flip to that status and reset the counter.
+            if state.status != msg.status {
+                state.status = msg.status.clone();
+                state.cnt = 0;
+            } else {
+                state.cnt += 1;
+                // We only accept the color (move to the next epoch) if the
+                // counter is higher the the conviction treshold.
+                if state.cnt > (CONVICTION_TRESHOLD * SAMPLES as f32) as u64 {
+                    state.advance();
+                    if state.epoch == MAX_EPOCHS {
+                        state.is_final = true;
+                        return Some((state.tx.hash(), state.status.clone()));
+                    }
+                }
             }
         }
+        self.send_query(state.tx.clone(), state.status.clone());
+        None
     }
 
     /// Once the querying node collects k responses, it checks if a
@@ -285,7 +316,9 @@ impl Node {
                 .filter(|&status| *status == state.status)
                 .count();
 
-            if n < (TRESHOLD * SAMPLES as f32) as usize {
+            if n >= (TRESHOLD * SAMPLES as f32) as usize {
+                state.cnt += 1;
+            } else {
                 state.flip();
             }
 
