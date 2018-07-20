@@ -313,7 +313,7 @@ impl Node {
                 // Get the confidence of our current status.
                 let our_status_cnt = state.status_count(&state.status);
 
-                // If the confidence of the received status is higher the ours we
+                // If the confidence of the received status is higher then ours we
                 // flip to that status.
                 if cnt > our_status_cnt {
                     state.status = msg.status.clone();
