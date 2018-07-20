@@ -68,6 +68,15 @@ enum Status {
     Invalid,
 }
 
+impl Status {
+    fn flip(&self) -> Status {
+        match self {
+            Status::Valid => Status::Invalid,
+            Status::Invalid => Status::Valid,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct QueryResponse {
     hash: Hash,
@@ -183,7 +192,12 @@ struct TxState {
     /// 2. Upon every color change, the node resets cnt to 0
     /// 3. Upon every successful query that yields ≥ αk responses for the same
     /// color as the node, the node increments cnt.
-    cnt: u64,
+    cnt_valid: u32,
+    cnt_invalid: u32,
+    cnt: u32,
+
+    /// Last decided status.
+    last_status: Status,
 }
 
 impl TxState {
@@ -191,10 +205,33 @@ impl TxState {
         TxState {
             responses: Vec::new(),
             is_final: false,
+            last_status: Status::Invalid,
             epoch: 0,
+            cnt_valid: 0,
+            cnt_invalid: 0,
             cnt: 0,
             tx,
             status,
+        }
+    }
+
+    fn incr_status(&mut self, s: &Status) -> u32 {
+        match s {
+            Status::Valid => {
+                self.cnt_valid += 1;
+                self.cnt_valid
+            }
+            Status::Invalid => {
+                self.cnt_invalid += 1;
+                self.cnt_invalid
+            }
+        }
+    }
+
+    fn status_count(&self, s: &Status) -> u32 {
+        match s {
+            Status::Valid => self.cnt_valid,
+            Status::Invalid => self.cnt_invalid,
         }
     }
 
@@ -271,16 +308,26 @@ impl Node {
             .count();
 
         if n >= (TRESHOLD * SAMPLES as f32) as usize {
-            // If the treshold is met and the sampled status differs from the
-            // node, we flip to that status and reset the counter.
-            if state.status != msg.status {
+            // Increment the confidence of the received status.
+            let cnt = state.incr_status(&msg.status);
+            // Get the confidence of our current status.
+            let our_status_cnt = state.status_count(&state.status);
+
+            // If the confidence of the received status is higher the ours we
+            // flip to that status.
+            if cnt > our_status_cnt {
                 state.status = msg.status.clone();
+                state.last_status = state.status.clone();
+            }
+
+            if msg.status != state.last_status {
+                state.last_status = msg.status.clone();
                 state.cnt = 0;
             } else {
                 state.cnt += 1;
                 // We only accept the color (move to the next epoch) if the
                 // counter is higher the the conviction treshold.
-                if state.cnt > (CONVICTION_TRESHOLD * SAMPLES as f32) as u64 {
+                if state.cnt > (CONVICTION_TRESHOLD * SAMPLES as f32) as u32 {
                     state.advance();
                     if state.epoch == MAX_EPOCHS {
                         state.is_final = true;
