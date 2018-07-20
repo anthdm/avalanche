@@ -243,7 +243,7 @@ impl TxState {
 
 #[derive(Debug, Clone)]
 struct Node {
-    mempool: HashMap<Hash, RefCell<TxState>>,
+    mempool: HashMap<Hash, TxState>,
     id: u64,
     sender: Sender<(u64, Message)>,
 }
@@ -278,13 +278,12 @@ impl Node {
         // TODO: This can be so much cleaner, just fighting to much with compiler!!
         let state = if !self.mempool.contains_key(&msg.tx.hash()) {
             let state = TxState::new(msg.tx.clone(), msg.status.clone());
-            self.mempool
-                .insert(msg.tx.hash(), RefCell::new(state.clone()));
+            self.mempool.insert(msg.tx.hash(), state.clone());
             self.send_query(msg.tx.clone(), msg.status.clone());
             state
         } else {
             let state = self.mempool.get(&msg.tx.hash()).unwrap();
-            state.clone().into_inner()
+            state.clone()
         };
         self.send_response(origin, state.tx.hash(), state.status.clone());
     }
@@ -294,48 +293,52 @@ impl Node {
     /// them until it collects all responses.     
     /// TODO: timeout + error handling!
     fn handle_query_response(&mut self, msg: &QueryResponse) -> Option<(Hash, Status)> {
-        let mut state = self.mempool.get(&msg.hash).unwrap().borrow_mut();
-        // If the state is considered final we dont handle this response anymore.
-        if state.is_final {
-            return None;
-        }
-        state.responses.push(msg.status.clone());
-
-        let n = state
-            .responses
-            .iter()
-            .filter(|&status| status == &msg.status)
-            .count();
-
-        if n >= (TRESHOLD * SAMPLES as f32) as usize {
-            // Increment the confidence of the received status.
-            let cnt = state.incr_status(&msg.status);
-            // Get the confidence of our current status.
-            let our_status_cnt = state.status_count(&state.status);
-
-            // If the confidence of the received status is higher the ours we
-            // flip to that status.
-            if cnt > our_status_cnt {
-                state.status = msg.status.clone();
-                state.last_status = state.status.clone();
+        {
+            let mut state = self.mempool.get_mut(&msg.hash).unwrap();
+            // If the state is considered final we dont handle this response anymore.
+            if state.is_final {
+                return None;
             }
+            state.responses.push(msg.status.clone());
 
-            if msg.status != state.last_status {
-                state.last_status = msg.status.clone();
-                state.cnt = 0;
-            } else {
-                state.cnt += 1;
-                // We only accept the color (move to the next epoch) if the
-                // counter is higher the the conviction treshold.
-                if state.cnt > (CONVICTION_TRESHOLD * SAMPLES as f32) as u32 {
-                    state.advance();
-                    if state.epoch == MAX_EPOCHS {
-                        state.is_final = true;
-                        return Some((state.tx.hash(), state.status.clone()));
+            let n = state
+                .responses
+                .iter()
+                .filter(|&status| status == &msg.status)
+                .count();
+
+            if n >= (TRESHOLD * SAMPLES as f32) as usize {
+                // Increment the confidence of the received status.
+                let cnt = state.incr_status(&msg.status);
+                // Get the confidence of our current status.
+                let our_status_cnt = state.status_count(&state.status);
+
+                // If the confidence of the received status is higher the ours we
+                // flip to that status.
+                if cnt > our_status_cnt {
+                    state.status = msg.status.clone();
+                    state.last_status = state.status.clone();
+                }
+
+                if msg.status != state.last_status {
+                    state.last_status = msg.status.clone();
+                    state.cnt = 0;
+                } else {
+                    state.cnt += 1;
+                    // We only accept the color (move to the next epoch) if the
+                    // counter is higher the the conviction treshold.
+                    if state.cnt > (CONVICTION_TRESHOLD * SAMPLES as f32) as u32 {
+                        state.advance();
+                        if state.epoch == MAX_EPOCHS {
+                            state.is_final = true;
+                            return Some((state.tx.hash(), state.status.clone()));
+                        }
                     }
                 }
             }
         }
+
+        let state = self.mempool.get(&msg.hash).unwrap();
         self.send_query(state.tx.clone(), state.status.clone());
         None
     }
@@ -345,17 +348,15 @@ impl Node {
         let status = self.verify_transaction(tx);
 
         // Add the tx to our mempool.
-        self.mempool.insert(
-            tx.hash(),
-            RefCell::new(TxState::new(tx.clone(), status.clone())),
-        );
+        self.mempool
+            .insert(tx.hash(), TxState::new(tx.clone(), status.clone()));
         self.send_query(tx.clone(), status.clone());
     }
 
     fn send_query(&self, tx: Transaction, status: Status) {
         let msg = Message::Query(QueryMessage {
-            tx: tx.clone(),
-            status: status.clone(),
+            tx: tx,
+            status: status,
         });
         self.sender.send((self.id, msg));
     }
