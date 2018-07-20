@@ -18,11 +18,20 @@ fn main() {
     let mut net = Network::new(10);
     net.run();
 
-    let node = net.nodes.get_mut(&1).unwrap();
-    let msg = Message::Transaction(Transaction::random());
-    node.lock().unwrap().handle_message(0, &msg);
+    loop {
+        let tx = Transaction::random();
+        println!("sending new transaction into the network {}", &tx.hash());
 
-    loop {}
+        // Pick a random node in the network let the node handle the random transaction.
+        // All transactions with a number < 7 are considered invalid.
+        let id = thread_rng().gen_range(0, net.nodes.len()) as u64;
+        let node = net.nodes.get_mut(&id).unwrap();
+        node.lock()
+            .unwrap()
+            .handle_message(0, &Message::Transaction(tx));
+
+        thread::sleep_ms(500): // cpu ded 
+    }
 }
 
 #[derive(Eq, PartialEq, Clone, Hash)]
@@ -100,7 +109,7 @@ impl Transaction {
 }
 
 pub const SAMPLES: usize = 4;
-pub const MAX_EPOCHS: u32 = 5;
+pub const MAX_EPOCHS: u32 = 4;
 pub const TRESHOLD: f32 = 0.5;
 
 #[derive(Debug)]
@@ -167,12 +176,14 @@ struct TxState {
     tx: Transaction,
     status: Status,
     responses: Vec<Status>,
+    is_final: bool,
 }
 
 impl TxState {
     fn new(tx: Transaction, status: Status) -> Self {
         TxState {
             responses: Vec::new(),
+            is_final: false,
             epoch: 0,
             tx,
             status,
@@ -209,13 +220,13 @@ impl Node {
     }
 
     fn handle_message(&mut self, origin: u64, msg: &Message) {
-        println!("node {} recv from {} => {:?}", self.id, origin, msg);
+        //println!("node {} recv from {} => {:?}", self.id, origin, msg);
 
         match msg {
             Message::Query(ref msg) => self.handle_query(origin, msg),
             Message::QueryResponse((_to, ref msg)) => {
-                if let Some((_hash, _status)) = self.handle_query_response(msg) {
-                    panic!("got decision");
+                if let Some((hash, status)) = self.handle_query_response(msg) {
+                    println!("node {} got decision {:?} for tx {}", self.id, status, hash);
                 };
             }
             Message::Transaction(tx) => self.handle_transaction(tx),
@@ -246,6 +257,9 @@ impl Node {
     /// TODO: timeout + error handling!
     fn handle_query_response(&mut self, msg: &QueryResponse) -> Option<(Hash, Status)> {
         let mut state = self.mempool.get(&msg.hash).unwrap().borrow_mut();
+        if state.is_final {
+            return None;
+        }
         state.responses.push(msg.status.clone());
 
         match self.check_responses(&mut state) {
@@ -277,6 +291,7 @@ impl Node {
 
             state.advance();
             if state.epoch == MAX_EPOCHS {
+                state.is_final = true;
                 return Some((state.tx.hash(), state.status.clone()));
             }
         }
