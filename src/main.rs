@@ -202,15 +202,6 @@ impl TxState {
         self.epoch += 1;
         self.responses.clear();
     }
-
-    fn flip(&mut self) {
-        match self.status {
-            Status::Valid => self.status = Status::Invalid,
-            Status::Invalid => self.status = Status::Valid,
-        }
-        // Upon every color change we need to reset the counter.
-        self.cnt = 0;
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -299,35 +290,6 @@ impl Node {
             }
         }
         self.send_query(state.tx.clone(), state.status.clone());
-        None
-    }
-
-    /// Once the querying node collects k responses, it checks if a
-    /// fraction ≥ αk are for the same color, where α > 0.5 is a protocol parameter.
-    /// If the αk threshold is met and the sampled color differs from the node’s
-    /// own color, the node flips to that color. It then goes back to the query step,
-    /// and initiates a subsequent round of query, for a total of m rounds.
-    /// Finally, the node decides the color it ended up with at time m.
-    fn check_responses(&self, state: &mut TxState) -> Option<(Hash, Status)> {
-        if state.responses.len() == SAMPLES {
-            let n = state
-                .responses
-                .iter()
-                .filter(|&status| *status == state.status)
-                .count();
-
-            if n >= (TRESHOLD * SAMPLES as f32) as usize {
-                state.cnt += 1;
-            } else {
-                state.flip();
-            }
-
-            state.advance();
-            if state.epoch == MAX_EPOCHS {
-                state.is_final = true;
-                return Some((state.tx.hash(), state.status.clone()));
-            }
-        }
         None
     }
 
