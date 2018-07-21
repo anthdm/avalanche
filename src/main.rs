@@ -7,7 +7,6 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use rand::{sample, thread_rng, Rng};
 use ring::digest;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{mpsc::{channel, Receiver, Sender},
                 Arc,
@@ -68,15 +67,6 @@ enum Status {
     Invalid,
 }
 
-impl Status {
-    fn flip(&self) -> Status {
-        match self {
-            Status::Valid => Status::Invalid,
-            Status::Invalid => Status::Valid,
-        }
-    }
-}
-
 #[derive(Debug)]
 struct QueryResponse {
     hash: Hash,
@@ -117,6 +107,7 @@ impl Transaction {
     }
 }
 
+/// Hardcoded tuning parameters for the algorithm.
 pub const SAMPLES: usize = 4;
 pub const MAX_EPOCHS: u32 = 4;
 pub const TRESHOLD: f32 = 0.75;
@@ -291,10 +282,10 @@ impl Node {
     /// If k responses are not received within a time bound, the node picks an
     /// additional sample from the remaining nodes uniformly at random and queries
     /// them until it collects all responses.     
-    /// TODO: timeout + error handling!
+    /// TODO: timeout + error handling + factor some pieces out of this method!
     fn handle_query_response(&mut self, msg: &QueryResponse) -> Option<(Hash, Status)> {
         {
-            let mut state = self.mempool.get_mut(&msg.hash).unwrap();
+            let state = self.mempool.get_mut(&msg.hash).unwrap();
             // If the state is considered final we dont handle this response anymore.
             if state.is_final {
                 return None;
